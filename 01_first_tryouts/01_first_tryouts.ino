@@ -1,12 +1,9 @@
 #include "MeMegaPi.h"
 
 // Fahr-Motor an PORT3
-//MeMegaPiDCMotor driveMotorA(PORT3A);
 MeMegaPiDCMotor driveMotorB(PORT3B);
-//MeEncoderOnBoard driveMotorB(PORT3B);
 
 // Lenk-Motor an PORT1: steuert die Lenkung der Vorderachse
-//MeMegaPiDCMotor steeringMotorA(PORT1A);
 MeMegaPiDCMotor steeringMotorB(PORT1B);
 
 // Linienfolger-Sensor (Sensor 1 = links, Sensor 2 = rechts)
@@ -82,30 +79,23 @@ void followLine() {
 }
 
 void driveForward() {
-  // driveMotorA.run(DRIVE_SPEED);
   driveMotorB.run(DRIVE_SPEED);
-  // driveMotorB.setMotorPwm(DRIVE_SPEED);
 }
 
 void driveBackward() {
-  // driveMotorA.run(DRIVE_SPEED);
   driveMotorB.run(DRIVE_SPEED_BACKWARDS);
-  // driveMotorB.setMotorPwm(DRIVE_SPEED_BACKWARDS);
 }
 
 void stopDriveMotor() {
-  //driveMotorA.stop();
   driveMotorB.stop();
 }
 
 // Schlägt die Lenkung mit speed für durationMs aus und aktualisiert steeringBalance um +/- durationMs
 void steer(int speed, unsigned long durationMs) {
-  //steeringMotorA.run(speed);
   stopDriveMotor();
   steeringMotorB.run(speed);
   steeringBalance += (speed > 0) ? (long)durationMs : -(long)durationMs;
   delay(durationMs);
-  // steeringMotorA.stop();
   steeringMotorB.stop();
   driveForward();
   delay(500);
