@@ -1,45 +1,93 @@
 #include "MeMegaPi.h"
 
-// Fahr-Motor an PORT3
-MeMegaPiDCMotor driveMotorB(PORT3B);
+// Fahr-Motor an PORT3 (= SLOT3)
+MeEncoderOnBoard driveMotorB(SLOT3);
 
-// Lenk-Motor an PORT1: steuert die Lenkung der Vorderachse
-MeMegaPiDCMotor steeringMotorB(PORT1B);
+// Lenk-Motor an PORT1 (= SLOT1)
+MeEncoderOnBoard steeringMotorB(SLOT1);
 
 // Linienfolger-Sensor (Sensor 1 = links, Sensor 2 = rechts)
 MeLineFollower lineFinder(PORT_5);
 
-// Encoder-Pins
-const byte ENCODER_INTERRUPT_PIN = 18;
-const byte ENCODER_SIGNAL_PIN = 31;
-volatile long encoderPulseCount = 0;
+// Fahr-Geschwindigkeit in U/min für den Encoder-Motor
+const float DRIVE_SPEED_RPM = 100;
 
-// Motor-Geschwindigkeiten (-255 bis 255)
-const int DRIVE_SPEED = 50;
-const int DRIVE_SPEED_BACKWARDS = -50;
-const int STEERING_SPEED = 150;
+// Lenk-Geschwindigkeit in U/min für den Encoder-Motor
+const float STEERING_SPEED_RPM = 150;
 
-// Lenkdauer
-const unsigned long STEERING_DURATION_MS = 1500;
-// Rückstellschritt Dauer
-const unsigned long SEARCH_STEP_DURATION_MS = 1500;
+// Lenkwinkel in Grad pro Korrekturschritt sowie der max. Lenkeinschlag.
+const long STEERING_STEP_DEG = 25;
+const long STEERING_MAX_ANGLE_DEG = 75;
 
-// Summe der bisherigen Lenkzeit in ms. (negativ = rechts; positiv = links)
-// Wird in steer() entsprechend verrgrößert / verringer
-long steeringBalance = 0;
+// Timeout für max. Lenkung
+const unsigned long STEERING_TIMEOUT_MS = 2000;
+
+// Aktuell angefahrener Soll-Lenkwinkel in Grad (negativ = rechts; positiv = links).
+long steeringAngle = 0;
+
+// Interrupt Service Routinen für die Encoder (Pulszählung, von der Library benötigt)
+void isr_process_driveEncoder() {
+  if (digitalRead(driveMotorB.getPortB()) == 0) {
+    driveMotorB.pulsePosMinus();
+  } else {
+    driveMotorB.pulsePosPlus();
+  }
+}
+
+void isr_process_steeringEncoder() {
+  if (digitalRead(steeringMotorB.getPortB()) == 0) {
+    steeringMotorB.pulsePosMinus();
+  } else {
+    steeringMotorB.pulsePosPlus();
+  }
+}
 
 void setup() {
   Serial.begin(9600);
   Serial.println("=== Makeblock MegaPi gestartet ===");
 
-  pinMode(ENCODER_INTERRUPT_PIN, INPUT_PULLUP);
-  pinMode(ENCODER_SIGNAL_PIN, INPUT);
-  attachInterrupt(digitalPinToInterrupt(ENCODER_INTERRUPT_PIN), encoderISR, RISING);
+  attachInterrupt(driveMotorB.getIntNum(), isr_process_driveEncoder, RISING);
+  attachInterrupt(steeringMotorB.getIntNum(), isr_process_steeringEncoder, RISING);
+
+  // Standard-Encoder-Setup von Makeblock
+  // PWM-Frequenz auf Timer1 (Lenkung, Pin 12) und Timer2 (Fahr-Motor, Pin 9) hochsetzen
+  TCCR1A = _BV(WGM10);
+  TCCR1B = _BV(CS11) | _BV(WGM12);
+  TCCR2A = _BV(WGM21) | _BV(WGM20);
+  TCCR2B = _BV(CS21);
+
+  // Getriebe-/Encoder-Kennwerte (Makeblock Encoder-Motor: 7 Pulse/U, Ratio 1:26.9)
+  // TODO: mit dem Aufdruck auf den Motoren abgleichen
+  driveMotorB.setPulse(7);
+  driveMotorB.setRatio(26.9);
+  driveMotorB.setSpeedPid(0.18, 0, 0);
+
+  steeringMotorB.setPulse(7);
+  steeringMotorB.setRatio(26.9);
+  steeringMotorB.setPosPid(1.8, 0, 1.2);
+  steeringMotorB.setSpeedPid(0.18, 0, 0);
+
+  steeringMotorB.moveTo(0, STEERING_SPEED_RPM);
+  waitForSteering();
 }
 
 void loop() {
-  delay(200);
+  delayWithMotorUpdate(200);
   followLine();
+}
+
+// Ruft die Encoder-PID beider Motoren auf; muss regelmäßig laufen, sonst wird PWM nicht aktualisiert.
+void updateMotors() {
+  driveMotorB.loop();
+  steeringMotorB.loop();
+}
+
+// Wartet wie delay(), hält aber die Encoder-PID am Laufen statt zu blockieren.
+void delayWithMotorUpdate(unsigned long ms) {
+  unsigned long start = millis();
+  while (millis() - start < ms) {
+    updateMotors();
+  }
 }
 
 void followLine() {
@@ -49,7 +97,7 @@ void followLine() {
       Serial.println("Beide Sensoren auf der Linie: stoppen");
       stopDriveMotor();
       driveBackward();
-      delay(2000);
+      delayWithMotorUpdate(2000);
       stopDriveMotor();
       steerRight();
 
@@ -79,55 +127,49 @@ void followLine() {
 }
 
 void driveForward() {
-  driveMotorB.run(DRIVE_SPEED);
+  driveMotorB.runSpeed(DRIVE_SPEED_RPM);
 }
 
 void driveBackward() {
-  driveMotorB.run(DRIVE_SPEED_BACKWARDS);
+  driveMotorB.runSpeed(-DRIVE_SPEED_RPM);
 }
 
 void stopDriveMotor() {
-  driveMotorB.stop();
+  driveMotorB.runSpeed(0);
 }
 
-// Schlägt die Lenkung mit speed für durationMs aus und aktualisiert steeringBalance um +/- durationMs
-void steer(int speed, unsigned long durationMs) {
+// Fährt den Soll-Lenkwinkel um deltaDeg weiter und wartet, bis der Encoder-Motor
+// die Zielposition tatsächlich erreicht hat (closed-loop statt Zeitschätzung).
+void steer(long deltaDeg) {
   stopDriveMotor();
-  steeringMotorB.run(speed);
-  steeringBalance += (speed > 0) ? (long)durationMs : -(long)durationMs;
-  delay(durationMs);
-  steeringMotorB.stop();
+  steeringAngle = constrain(steeringAngle + deltaDeg, -STEERING_MAX_ANGLE_DEG, STEERING_MAX_ANGLE_DEG);
+  steeringMotorB.moveTo(steeringAngle, STEERING_SPEED_RPM);
+  waitForSteering();
   driveForward();
-  delay(500);
+  delayWithMotorUpdate(500);
   stopDriveMotor();
+}
+
+// Blockiert, bis der Lenkmotor den zuletzt per moveTo() gesetzten Zielwinkel erreicht hat.
+void waitForSteering() {
+  unsigned long start = millis();
+  while (!steeringMotorB.isTarPosReached() && millis() - start < STEERING_TIMEOUT_MS) {
+    updateMotors();
+  }
 }
 
 void steerLeft() {
-  steer(STEERING_SPEED, STEERING_DURATION_MS);
+  steer(STEERING_STEP_DEG);
 }
 
 void steerRight() {
-  steer(-STEERING_SPEED, STEERING_DURATION_MS);
+  steer(-STEERING_STEP_DEG);
 }
 
-// Stellt die Lenkung schrittweise gerade, bis steeringBalance wieder 0 ist.
+// Stellt die Lenkung direkt auf den bekannten Mittelpunkt (0 Grad) zurück.
 void steerStraight() {
   stopDriveMotor();
-  while (steeringBalance != 0) {
-    if (steeringBalance > 0) {
-      steer(-STEERING_SPEED, SEARCH_STEP_DURATION_MS);
-    } else {
-      steer(STEERING_SPEED, SEARCH_STEP_DURATION_MS);
-    }
-  }
-}
-
-// Interrupt Service Routine für die Encoder-Zählung (brauchen wir das? Encoder Zählung war im Beispiel weil wir einen Encoder Motor verwenden.
-// Hier könnte irgendwie die tatsächliche Drehung ermittelt werden) --> evtl Umstellen auf MeEncoderOnBoard?
-void encoderISR() {
-  if (digitalRead(ENCODER_SIGNAL_PIN) > 0) {
-    encoderPulseCount++;
-  } else {
-    encoderPulseCount--;
-  }
+  steeringAngle = 0;
+  steeringMotorB.moveTo(steeringAngle, STEERING_SPEED_RPM);
+  waitForSteering();
 }
