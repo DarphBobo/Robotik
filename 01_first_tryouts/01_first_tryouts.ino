@@ -72,7 +72,7 @@ void followLine() {
 
     case S1_OUT_S2_OUT:
       Serial.println("Beide Sensoren außerhalb der Linie: Linie wird gesucht");
-      searchLine();
+      steerStraight();
       driveForward();
       break;
 
@@ -103,9 +103,7 @@ void steer(int speed, unsigned long durationMs) {
   //steeringMotorA.run(speed);
   stopDriveMotor();
   steeringMotorB.run(speed);
-  if (steeringBalance != 0) {
-    steeringBalance += (speed > 0) ? (long)durationMs : -(long)durationMs;
-  }
+  steeringBalance += (speed > 0) ? (long)durationMs : -(long)durationMs;
   delay(durationMs);
   // steeringMotorA.stop();
   steeringMotorB.stop();
@@ -123,7 +121,7 @@ void steerRight() {
 }
 
 // Stellt die Lenkung schrittweise gerade, bis steeringBalance wieder 0 ist.
-void searchLine() {
+void steerStraight() {
   stopDriveMotor();
   while (steeringBalance != 0) {
     if (steeringBalance > 0) {
