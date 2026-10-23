@@ -98,6 +98,7 @@ void stopDriveMotor() {
 // Schlägt die Lenkung mit speed für durationMs aus und aktualisiert steeringBalance um +/- durationMs
 void steer(int speed, unsigned long durationMs) {
   //steeringMotorA.run(speed);
+  stopDriveMotor();
   steeringMotorB.run(speed);
   steeringBalance += (speed > 0) ? (long)durationMs : -(long)durationMs;
   delay(durationMs);
