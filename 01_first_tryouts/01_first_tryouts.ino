@@ -3,6 +3,7 @@
 // Fahr-Motor an PORT3
 //MeMegaPiDCMotor driveMotorA(PORT3A);
 MeMegaPiDCMotor driveMotorB(PORT3B);
+//MeEncoderOnBoard driveMotorB(PORT3B);
 
 // Lenk-Motor an PORT1: steuert die Lenkung der Vorderachse
 //MeMegaPiDCMotor steeringMotorA(PORT1A);
@@ -22,9 +23,9 @@ const int DRIVE_SPEED_BACKWARDS = -50;
 const int STEERING_SPEED = 150;
 
 // Lenkdauer
-const unsigned long STEERING_DURATION_MS = 1000;
+const unsigned long STEERING_DURATION_MS = 1500;
 // Rückstellschritt Dauer
-const unsigned long SEARCH_STEP_DURATION_MS = 500;
+const unsigned long SEARCH_STEP_DURATION_MS = 1500;
 
 // Summe der bisherigen Lenkzeit in ms. (negativ = rechts; positiv = links)
 // Wird in steer() entsprechend verrgrößert / verringer
@@ -83,11 +84,13 @@ void followLine() {
 void driveForward() {
   // driveMotorA.run(DRIVE_SPEED);
   driveMotorB.run(DRIVE_SPEED);
+  // driveMotorB.setMotorPwm(DRIVE_SPEED);
 }
 
 void driveBackward() {
   // driveMotorA.run(DRIVE_SPEED);
   driveMotorB.run(DRIVE_SPEED_BACKWARDS);
+  // driveMotorB.setMotorPwm(DRIVE_SPEED_BACKWARDS);
 }
 
 void stopDriveMotor() {
@@ -100,10 +103,15 @@ void steer(int speed, unsigned long durationMs) {
   //steeringMotorA.run(speed);
   stopDriveMotor();
   steeringMotorB.run(speed);
-  steeringBalance += (speed > 0) ? (long)durationMs : -(long)durationMs;
+  if (steeringBalance != 0) {
+    steeringBalance += (speed > 0) ? (long)durationMs : -(long)durationMs;
+  }
   delay(durationMs);
   // steeringMotorA.stop();
   steeringMotorB.stop();
+  driveForward();
+  delay(500);
+  stopDriveMotor();
 }
 
 void steerLeft() {
@@ -116,6 +124,7 @@ void steerRight() {
 
 // Stellt die Lenkung schrittweise gerade, bis steeringBalance wieder 0 ist.
 void searchLine() {
+  stopDriveMotor();
   while (steeringBalance != 0) {
     if (steeringBalance > 0) {
       steer(-STEERING_SPEED, SEARCH_STEP_DURATION_MS);
