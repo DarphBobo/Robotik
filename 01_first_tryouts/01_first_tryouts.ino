@@ -1,11 +1,11 @@
 #include "MeMegaPi.h"
 
 // Fahr-Motoren an PORT3 (= SLOT3) und PORT4 (= SLOT4)
+MeEncoderOnBoard driveMotorA(SLOT2);
 MeEncoderOnBoard driveMotorB(SLOT3);
-MeEncoderOnBoard driveMotorC(SLOT4);
 
 // Lenk-Motor an PORT1 (= SLOT1)
-MeEncoderOnBoard steeringMotorB(SLOT1);
+MeEncoderOnBoard steeringMotor(SLOT1);
 
 // Linienfolger-Sensor (Sensor 1 = links, Sensor 2 = rechts)
 MeLineFollower lineFinder(PORT_5);
@@ -28,6 +28,14 @@ long steeringAngle = 0;
 
 // Interrupt Service Routinen für die Encoder (Pulszählung, von der Library benötigt)
 void isr_process_driveEncoder() {
+  if (digitalRead(driveMotorA.getPortB()) == 0) {
+    driveMotorA.pulsePosMinus();
+  } else {
+    driveMotorA.pulsePosPlus();
+  }
+}
+
+void isr_process_driveEncoderC() {
   if (digitalRead(driveMotorB.getPortB()) == 0) {
     driveMotorB.pulsePosMinus();
   } else {
@@ -35,19 +43,11 @@ void isr_process_driveEncoder() {
   }
 }
 
-void isr_process_driveEncoderC() {
-  if (digitalRead(driveMotorC.getPortB()) == 0) {
-    driveMotorC.pulsePosMinus();
-  } else {
-    driveMotorC.pulsePosPlus();
-  }
-}
-
 void isr_process_steeringEncoder() {
-  if (digitalRead(steeringMotorB.getPortB()) == 0) {
-    steeringMotorB.pulsePosMinus();
+  if (digitalRead(steeringMotor.getPortB()) == 0) {
+    steeringMotor.pulsePosMinus();
   } else {
-    steeringMotorB.pulsePosPlus();
+    steeringMotor.pulsePosPlus();
   }
 }
 
@@ -55,9 +55,9 @@ void setup() {
   Serial.begin(9600);
   Serial.println("=== Makeblock MegaPi gestartet ===");
 
-  attachInterrupt(driveMotorB.getIntNum(), isr_process_driveEncoder, RISING);
-  attachInterrupt(driveMotorC.getIntNum(), isr_process_driveEncoderC, RISING);
-  attachInterrupt(steeringMotorB.getIntNum(), isr_process_steeringEncoder, RISING);
+  attachInterrupt(driveMotorA.getIntNum(), isr_process_driveEncoder, RISING);
+  attachInterrupt(driveMotorB.getIntNum(), isr_process_driveEncoderC, RISING);
+  attachInterrupt(steeringMotor.getIntNum(), isr_process_steeringEncoder, RISING);
 
   // Standard-Encoder-Setup von Makeblock
   // PWM-Frequenz auf Timer1 (Lenkung, Pin 12), Timer2 (Fahr-Motor SLOT3, Pin 9)
@@ -70,25 +70,25 @@ void setup() {
   TCCR3B = _BV(CS31) | _BV(WGM32);
 
   // Fahr-Motoren-Aufdruck (beide baugleich): 185 RPM, Ratio 1:46
+  driveMotorA.setPulse(7);
+  driveMotorA.setRatio(46);
+  driveMotorA.setSpeedPid(0.18, 0, 0);
+
   driveMotorB.setPulse(7);
   driveMotorB.setRatio(46);
   driveMotorB.setSpeedPid(0.18, 0, 0);
 
-  driveMotorC.setPulse(7);
-  driveMotorC.setRatio(46);
-  driveMotorC.setSpeedPid(0.18, 0, 0);
-
   // Lenkmotor-Aufdruck: 86 RPM, Ratio 1:75 (abweichend von den Fahr-Motoren)
-  steeringMotorB.setPulse(7);
-  steeringMotorB.setRatio(75);
-  steeringMotorB.setPosPid(1.8, 0, 1.2);
-  steeringMotorB.setSpeedPid(0.18, 0, 0);
+  steeringMotor.setPulse(7);
+  steeringMotor.setRatio(75);
+  steeringMotor.setPosPid(1.8, 0, 1.2);
+  steeringMotor.setSpeedPid(0.18, 0, 0);
   // Deadband verkleinert (Default 10°): moveTo()'s Abbremsrampe bremst ab
   // (pos_error - deadband) ab, ein kleineres Deadband hält die Lenkung
   // länger auf Geschwindigkeit, bevor sie kurz vor dem Ziel abbremst.
-  steeringMotorB.setPosDeadBand(3);
+  steeringMotor.setPosDeadBand(3);
 
-  steeringMotorB.moveTo(0, STEERING_SPEED_RPM);
+  steeringMotor.moveTo(0, STEERING_SPEED_RPM);
   waitForSteering();
 }
 
@@ -99,9 +99,9 @@ void loop() {
 
 // Ruft die Encoder-PID beider Motoren auf; muss regelmäßig laufen, sonst wird PWM nicht aktualisiert.
 void updateMotors() {
+  driveMotorA.loop();
   driveMotorB.loop();
-  driveMotorC.loop();
-  steeringMotorB.loop();
+  steeringMotor.loop();
 }
 
 // Wartet wie delay(), hält aber die Encoder-PID am Laufen statt zu blockieren.
@@ -116,12 +116,23 @@ void followLine() {
   int sensorState = lineFinder.readSensors();
   switch (sensorState) {
     case S1_IN_S2_IN:
-      Serial.println("Beide Sensoren auf der Linie: stoppen");
+      Serial.println("Beide Sensoren auf der Linie: ");
       stopDriveMotor();
+      steerLeft();
+      steerLeft();
       driveBackward();
-      delayWithMotorUpdate(2000);
+      delayWithMotorUpdate(3500);
+
       stopDriveMotor();
+      steerStraight();
       steerRight();
+      steerRight();
+      driveForward();
+      delayWithMotorUpdate(4000);
+
+
+      //  driveForward();
+      // delayWithMotorUpdate(4000);
 
       break;
 
@@ -129,7 +140,7 @@ void followLine() {
       Serial.println("Linker Sensor (S1) auf der Fahrbahnlinie: zu weit links, Lenkung nach rechts einschlagen");
       steerLeft();
       driveBackward();
-      delayWithMotorUpdate(2000);
+      delayWithMotorUpdate(1250);
       stopDriveMotor();
       steerStraight();
       //steerRight();
@@ -140,7 +151,7 @@ void followLine() {
       Serial.println("Rechter Sensor (S2) auf der Fahrbahnlinie: zu weit rechts, Lenkung nach links einschlagen");
       steerRight();
       driveBackward();
-      delayWithMotorUpdate(2000);
+      delayWithMotorUpdate(1250);
       stopDriveMotor();
       steerStraight();
       //steerLeft();
@@ -159,23 +170,23 @@ void followLine() {
 }
 
 void driveForwardHalf() {
-  driveMotorB.runSpeed(DRIVE_SPEED_RPM / 2);
-  driveMotorC.runSpeed(DRIVE_SPEED_RPM / 2);
+  driveMotorA.runSpeed(DRIVE_SPEED_RPM / 2);
+  driveMotorB.runSpeed(-DRIVE_SPEED_RPM / 2);
 }
 
 void driveForward() {
-  driveMotorB.runSpeed(DRIVE_SPEED_RPM);
-  driveMotorC.runSpeed(DRIVE_SPEED_RPM);
+  driveMotorA.runSpeed(DRIVE_SPEED_RPM);
+  driveMotorB.runSpeed(-DRIVE_SPEED_RPM);
 }
 
 void driveBackward() {
-  driveMotorB.runSpeed(-DRIVE_SPEED_RPM);
-  driveMotorC.runSpeed(-DRIVE_SPEED_RPM);
+  driveMotorA.runSpeed(-DRIVE_SPEED_RPM);
+  driveMotorB.runSpeed(DRIVE_SPEED_RPM);
 }
 
 void stopDriveMotor() {
+  driveMotorA.runSpeed(0);
   driveMotorB.runSpeed(0);
-  driveMotorC.runSpeed(0);
 }
 
 // Fährt den Soll-Lenkwinkel um deltaDeg weiter und wartet, bis der Encoder-Motor
@@ -183,21 +194,21 @@ void stopDriveMotor() {
 void steer(long deltaDeg) {
   stopDriveMotor();
   steeringAngle = constrain(steeringAngle + deltaDeg, -STEERING_MAX_ANGLE_DEG, STEERING_MAX_ANGLE_DEG);
-  steeringMotorB.moveTo(steeringAngle, STEERING_SPEED_RPM);
+  steeringMotor.moveTo(steeringAngle, STEERING_SPEED_RPM);
   waitForSteering();
   Serial.print("Lenkung Soll: ");
   Serial.print(steeringAngle);
   Serial.print(" Ist: ");
-  Serial.println(steeringMotorB.getCurPos());
-  driveForward();
-  delayWithMotorUpdate(500);
+  Serial.println(steeringMotor.getCurPos());
+  //driveForward();
+  //delayWithMotorUpdate(500);
   stopDriveMotor();
 }
 
 // Blockiert, bis der Lenkmotor den zuletzt per moveTo() gesetzten Zielwinkel erreicht hat.
 void waitForSteering() {
   unsigned long start = millis();
-  while (!steeringMotorB.isTarPosReached() && millis() - start < STEERING_TIMEOUT_MS) {
+  while (!steeringMotor.isTarPosReached() && millis() - start < STEERING_TIMEOUT_MS) {
     updateMotors();
   }
 }
@@ -214,6 +225,6 @@ void steerRight() {
 void steerStraight() {
   //stopDriveMotor();
   steeringAngle = 0;
-  steeringMotorB.moveTo(steeringAngle, STEERING_SPEED_RPM);
+  steeringMotor.moveTo(steeringAngle, STEERING_SPEED_RPM);
   waitForSteering();
 }
