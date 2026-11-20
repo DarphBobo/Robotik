@@ -13,14 +13,15 @@ MeLineFollower lineFinder(PORT_5);
 // Ultraschallsensor, fest nach vorne gerichtet (Hinderniserkennung, z.B. Flasche)
 MeUltrasonicSensor ultrasonic(PORT_6);
 
-// Greifer-Servo (Makeblock Robot Gripper). Pin ist ein Platzhalter für den Servo-Anschluss
-// am MegaPi - an die tatsächliche Verkabelung anpassen.
-Servo gripper;
-const uint8_t GRIPPER_SERVO_PIN = PORT4B;
+// Greifer (Makeblock Robot Gripper): ein Getriebemotor mit Schneckengetriebe, kein Servo -
+// daher über Laufzeit statt Zielwinkel angesteuert. Das Schneckengetriebe hält die Position
+// von selbst, sobald der Motor stoppt (kein Strom zum Halten nötig).
+MeMegaPiDCMotor gripper(PORT4B);
 
-// Greifer-Winkel in Grad; vor dem Einsatz am echten Greifer kalibrieren.
-const int GRIPPER_OPEN_ANGLE = 20;
-const int GRIPPER_CLOSE_ANGLE = 180;
+// Motor-Geschwindigkeit (0-255) und Laufzeit zum vollständigen Öffnen/Schließen; am echten
+// Greifer kalibrieren (z.B. Zeit erhöhen, bis er spürbar am Anschlag ist, dann etwas Puffer abziehen).
+const uint8_t GRIPPER_MOTOR_SPEED = 150;
+const unsigned long GRIPPER_ACTUATE_MS = 2500;
 
 // Fahr-Geschwindigkeit in U/min für den Encoder-Motor
 const float DRIVE_SPEED_RPM = 15;
@@ -29,7 +30,7 @@ const float DRIVE_SPEED_RPM = 15;
 const float BOTTLE_DETECT_CM = 50.0;
 
 // Ab dieser (kleineren) Entfernung gilt die Flasche als in Greifreichweite -> zugreifen statt weiterfahren.
-const float BOTTLE_GRAB_CM = 4.0;
+const float BOTTLE_GRAB_CM = 5.0;
 
 // Wird beim ersten Rückwärtsmanöver (doppelte Linie erkannt) auf true gesetzt.
 // Ab dann verlässt das Fahrzeug die Linienverfolgung dauerhaft und sucht/schiebt
@@ -121,7 +122,6 @@ void setup() {
   steeringMotor.moveTo(0, STEERING_SPEED_RPM);
   waitForSteering();
 
-  gripper.attach(GRIPPER_SERVO_PIN);
   openGripper();
 }
 
@@ -232,30 +232,37 @@ void driveForward() {
   driveMotorB.runSpeed(-DRIVE_SPEED_RPM);
 }
 
+// War im letzten Aufruf eine Flasche innerhalb BOTTLE_DETECT_CM in Sicht. Wird gebraucht, weil
+// distanceCm() bei zu kleinem Abstand (Flasche direkt vor dem Sensor, unterhalb dessen
+// Mindest-Messdistanz) genau wie bei "nichts in Reichweite" eine 0 liefert - ohne dieses Merken
+// würde das Auto direkt vor der Flasche fälschlich in den Such-Zweig springen statt zuzugreifen.
+bool trackingBottle = false;
+
 // Wird von followLine() im Fall S1_OUT_S2_OUT aufgerufen, sobald bottleHuntActive gesetzt ist
 // (nach dem ersten Rückwärtsmanöver) - also nur, wenn gerade keine Grenzlinie in Sicht ist.
 // Der Sensor zeigt fest nach vorne und kann keine Richtung (links/rechts) unterscheiden - "in die
 // Richtung fahren" heißt hier deshalb: geradeaus auf das erkannte Objekt zuhalten, statt wie zuvor
 // davor zu stoppen, damit die Flasche dabei vor dem Fahrzeug her vom Feld geschoben wird.
-// distanceCm() liefert 0, wenn kein Echo empfangen wurde (nichts in Reichweite).
 void huntBottle() {
   float distance = ultrasonic.distanceCm();
   steerStraight();
-  if (distance > 0 && distance < BOTTLE_GRAB_CM) {
-    Serial.print("Flasche in Greifweite (");
-    Serial.print(distance);
-    Serial.println(" cm) -> greife zu");
+
+  bool bottleInGrabRange = (distance > 0 && distance < BOTTLE_GRAB_CM) || (distance == 0 && trackingBottle);
+
+  if (bottleInGrabRange) {
+    Serial.println("Flasche in Greifweite -> greife zu");
     stopDriveMotor();
     closeGripper();
-    delayWithMotorUpdate(500);  // Zeit, bis der Greifer wirklich zugefasst hat
     bottleGrabbed = true;
+    trackingBottle = false;
   } else if (distance > 0 && distance < BOTTLE_DETECT_CM) {
     Serial.print("Flasche erkannt (");
     Serial.print(distance);
     Serial.println(" cm) -> fahre darauf zu und schiebe sie vom Feld");
-    steerStraight();
+    trackingBottle = true;
     driveForward();
   } else {
+    trackingBottle = false;
     Serial.println("Keine Flasche in Sicht -> suche weiter geradeaus");
     stopDriveMotor();
     steerLeft();
@@ -323,11 +330,15 @@ void steerStraight() {
 }
 
 void openGripper() {
-  gripper.write(GRIPPER_OPEN_ANGLE);
+  gripper.run(-GRIPPER_MOTOR_SPEED);
+  delayWithMotorUpdate(GRIPPER_ACTUATE_MS);
+  gripper.stop();
 }
 
 void closeGripper() {
-  gripper.write(GRIPPER_CLOSE_ANGLE);
+  gripper.run(GRIPPER_MOTOR_SPEED);
+  delayWithMotorUpdate(GRIPPER_ACTUATE_MS);
+  gripper.stop();
 }
 
 // Wird aufgerufen, solange bottleGrabbed gesetzt ist. Fährt geradeaus, bis der Linensensor wieder
@@ -340,7 +351,6 @@ void carryBottleOut() {
     Serial.println("Grenzlinie erreicht -> lasse Flasche los, Mission abgeschlossen");
     stopDriveMotor();
     openGripper();
-    delayWithMotorUpdate(500);
     bottleGrabbed = false;
     missionComplete = true;
     return;
