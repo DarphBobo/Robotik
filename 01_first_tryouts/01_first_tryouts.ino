@@ -10,8 +10,38 @@ MeEncoderOnBoard steeringMotor(SLOT1);
 // Linienfolger-Sensor (Sensor 1 = links, Sensor 2 = rechts)
 MeLineFollower lineFinder(PORT_5);
 
+// Ultraschallsensor, fest nach vorne gerichtet (Hinderniserkennung, z.B. Flasche)
+MeUltrasonicSensor ultrasonic(PORT_6);
+
+// Greifer-Servo (Makeblock Robot Gripper). Pin ist ein Platzhalter für den Servo-Anschluss
+// am MegaPi - an die tatsächliche Verkabelung anpassen.
+Servo gripper;
+const uint8_t GRIPPER_SERVO_PIN = PORT4B;
+
+// Greifer-Winkel in Grad; vor dem Einsatz am echten Greifer kalibrieren.
+const int GRIPPER_OPEN_ANGLE = 20;
+const int GRIPPER_CLOSE_ANGLE = 180;
+
 // Fahr-Geschwindigkeit in U/min für den Encoder-Motor
 const float DRIVE_SPEED_RPM = 15;
+
+// Bis zu dieser Entfernung (in cm) wird ein Objekt vor dem Sensor als Flasche gewertet.
+const float BOTTLE_DETECT_CM = 50.0;
+
+// Ab dieser (kleineren) Entfernung gilt die Flasche als in Greifreichweite -> zugreifen statt weiterfahren.
+const float BOTTLE_GRAB_CM = 4.0;
+
+// Wird beim ersten Rückwärtsmanöver (doppelte Linie erkannt) auf true gesetzt.
+// Ab dann verlässt das Fahrzeug die Linienverfolgung dauerhaft und sucht/schiebt
+// stattdessen per Ultraschallsensor Flaschen vom Feld.
+bool bottleHuntActive = true;
+
+// true, sobald der Greifer die Flasche gefasst hat -> Fahrzeug trägt sie aktiv aus dem Feld
+// und ignoriert dabei bewusst die Grenzlinien-Vermeidung (die Linie soll hier überquert werden).
+bool bottleGrabbed = false;
+
+// true, nachdem die Flasche draußen abgelegt wurde -> Fahrzeug bleibt stehen, Aufgabe erledigt.
+bool missionComplete = false;
 
 // Lenk-Geschwindigkeit in U/min für den Encoder-Motor
 const float STEERING_SPEED_RPM = 250;
@@ -90,10 +120,28 @@ void setup() {
 
   steeringMotor.moveTo(0, STEERING_SPEED_RPM);
   waitForSteering();
+
+  gripper.attach(GRIPPER_SERVO_PIN);
+  openGripper();
 }
 
 void loop() {
   delayWithMotorUpdate(200);
+
+  if (missionComplete) {
+    stopDriveMotor();
+    return;
+  }
+
+  // Sobald die Flasche gegriffen ist, hat das Verlassen des Feldes Vorrang vor allem
+  // anderen - die sonst geltende Grenzlinien-Vermeidung wird hier bewusst übersprungen.
+  if (bottleGrabbed) {
+    carryBottleOut();
+    return;
+  }
+
+  // Läuft immer, solange noch nichts gegriffen wurde: die Linie markiert die Spielfeldgrenze,
+  // die nie verlassen werden darf und hat deshalb Vorrang vor der Flaschenjagd.
   followLine();
 }
 
@@ -130,9 +178,8 @@ void followLine() {
       driveForward();
       delayWithMotorUpdate(4000);
 
-
-      //  driveForward();
-      // delayWithMotorUpdate(4000);
+      Serial.println("Erstes Rückwärtsmanöver abgeschlossen -> wechsle in Flaschen-Jagd-Modus");
+      bottleHuntActive = true;
 
       break;
 
@@ -159,9 +206,15 @@ void followLine() {
       break;
 
     case S1_OUT_S2_OUT:
-      Serial.println("Beide Sensoren außerhalb der Linie: Linie wird gesucht");
-      steerStraight();
-      driveForward();
+      // Keine Grenzlinie in Sicht: solange noch nicht im Jagd-Modus, normale Liniensuche;
+      // danach übernimmt die Flaschenjagd, bis wieder eine Grenzlinie erkannt wird (Fälle oben).
+      if (bottleHuntActive) {
+        huntBottle();
+      } else {
+        Serial.println("Beide Sensoren außerhalb der Linie: Linie wird gesucht");
+        steerStraight();
+        driveForward();
+      }
       break;
 
     default:
@@ -177,6 +230,46 @@ void driveForwardHalf() {
 void driveForward() {
   driveMotorA.runSpeed(DRIVE_SPEED_RPM);
   driveMotorB.runSpeed(-DRIVE_SPEED_RPM);
+}
+
+// Wird von followLine() im Fall S1_OUT_S2_OUT aufgerufen, sobald bottleHuntActive gesetzt ist
+// (nach dem ersten Rückwärtsmanöver) - also nur, wenn gerade keine Grenzlinie in Sicht ist.
+// Der Sensor zeigt fest nach vorne und kann keine Richtung (links/rechts) unterscheiden - "in die
+// Richtung fahren" heißt hier deshalb: geradeaus auf das erkannte Objekt zuhalten, statt wie zuvor
+// davor zu stoppen, damit die Flasche dabei vor dem Fahrzeug her vom Feld geschoben wird.
+// distanceCm() liefert 0, wenn kein Echo empfangen wurde (nichts in Reichweite).
+void huntBottle() {
+  float distance = ultrasonic.distanceCm();
+  steerStraight();
+  if (distance > 0 && distance < BOTTLE_GRAB_CM) {
+    Serial.print("Flasche in Greifweite (");
+    Serial.print(distance);
+    Serial.println(" cm) -> greife zu");
+    stopDriveMotor();
+    closeGripper();
+    delayWithMotorUpdate(500);  // Zeit, bis der Greifer wirklich zugefasst hat
+    bottleGrabbed = true;
+  } else if (distance > 0 && distance < BOTTLE_DETECT_CM) {
+    Serial.print("Flasche erkannt (");
+    Serial.print(distance);
+    Serial.println(" cm) -> fahre darauf zu und schiebe sie vom Feld");
+    steerStraight();
+    driveForward();
+  } else {
+    Serial.println("Keine Flasche in Sicht -> suche weiter geradeaus");
+    stopDriveMotor();
+    steerLeft();
+    steerLeft();
+    driveBackward();
+    delayWithMotorUpdate(1500);
+
+    stopDriveMotor();
+    steerStraight();
+    steerRight();
+    steerRight();
+    driveForward();
+    delayWithMotorUpdate(2000);
+  }
 }
 
 void driveBackward() {
@@ -227,4 +320,30 @@ void steerStraight() {
   steeringAngle = 0;
   steeringMotor.moveTo(steeringAngle, STEERING_SPEED_RPM);
   waitForSteering();
+}
+
+void openGripper() {
+  gripper.write(GRIPPER_OPEN_ANGLE);
+}
+
+void closeGripper() {
+  gripper.write(GRIPPER_CLOSE_ANGLE);
+}
+
+// Wird aufgerufen, solange bottleGrabbed gesetzt ist. Fährt geradeaus, bis der Linensensor wieder
+// S1_IN_S2_IN meldet (doppelt auf der Grenzlinie) - das ist diesmal kein Grund zum Ausweichen,
+// sondern das Signal "Feldgrenze erreicht", an dem die Flasche losgelassen wird.
+void carryBottleOut() {
+  steerStraight();
+  int sensorState = lineFinder.readSensors();
+  if (sensorState == S1_IN_S2_IN) {
+    Serial.println("Grenzlinie erreicht -> lasse Flasche los, Mission abgeschlossen");
+    stopDriveMotor();
+    openGripper();
+    delayWithMotorUpdate(500);
+    bottleGrabbed = false;
+    missionComplete = true;
+    return;
+  }
+  driveForward();
 }
